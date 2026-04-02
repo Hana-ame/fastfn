@@ -1,16 +1,11 @@
 # main.py
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from pathlib import Path
-# 继续添加
-from pydantic import BaseModel
 from typing import Any
 import importlib.util
 
 # from routers import upload, call, delete, download
 from routers import upload, call
-
-class CallRequest(BaseModel):
-    data: Any
 
 app = FastAPI()
 

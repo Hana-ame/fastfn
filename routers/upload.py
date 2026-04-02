@@ -9,7 +9,6 @@ from consts import BASE_DIR
 
 router = APIRouter()
 
-
 @router.put("/{folder}/{filename}")
 async def upload(folder: str, filename: str, file: UploadFile = File(...)):
     # 1. 安全检查

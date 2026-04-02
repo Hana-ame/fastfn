@@ -1,20 +1,25 @@
 # main.py
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from routers import upload, call
 from game import ws  # 导入刚才写的模块
 
 app = FastAPI()
 
-@app.get("/")
-def root():
-    return {"message": "Hello from FastAPI"}
-
 app.include_router(upload.router)
 app.include_router(call.router)
 
 # ws
 app.include_router(ws.router)
+
+@app.exception_handler(404)
+async def custom_404_handler(request: Request, exc):
+    # 根据异常内容动态返回响应
+    return JSONResponse(
+        status_code=200,
+        content={"detail": exc.detail, "path": request.url.path}
+    )
 
 # 在文件末尾
 if __name__ == "__main__":
@@ -23,7 +28,7 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8000,
-        # reload=True,   # 开发时启用热重载
+        reload=True,   # 开发时启用热重载
         log_level="info"
     )
 

@@ -6,6 +6,7 @@ import importlib.util
 
 # from routers import upload, call, delete, download
 from routers import upload, call
+from game import ws  # 导入刚才写的模块
 
 app = FastAPI()
 
@@ -16,6 +17,8 @@ def root():
 app.include_router(upload.router)
 app.include_router(call.router)
 
+# ws
+app.include_router(ws.router)
 
 # 在文件末尾
 if __name__ == "__main__":

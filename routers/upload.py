@@ -3,9 +3,11 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 import importlib.util
 import tempfile
+import time
 import os
 
-from .consts import BASE_DIR, deep_equal
+from process_manager import processes, start_runner
+from consts import BASE_DIR, deep_equal
 
 router = APIRouter()
 
@@ -67,6 +69,19 @@ async def upload(folder: str, filename: str, file: UploadFile = File(...)):
 
     # 3. 保存文件
     file_path.write_bytes(content)
+    
+    key = f"{folder}/{filename}"
+    if key in processes:
+        old = processes[key]["proc"]
+        if old.poll() is None:
+            old.terminate()
+            old.wait(timeout=3)
+        del processes[key]
+    # 可选：立即启动新进程（也可以不启动，等第一次调用时再启动）
+    # 如果希望上传后立即预热，可以取消注释下一行
+    proc = start_runner(file_path)
+    processes[key] = {"proc": proc, "last_used": time.time(), "code_path": file_path}
+
 
     return {"message": "saved", "path": str(file_path)}
 

@@ -36,42 +36,60 @@ def start_runner(code_path: Path) -> subprocess.Popen:
         text=True,               # 以文本模式（而非二进制）通信
         bufsize=1,               # 行缓冲，确保每条消息立即发送
     )
+# process_manager.py 
 
-# ======= 新增：向 Worker 发送测试请求 =======
 async def test_runner(proc: subprocess.Popen, timeout=10):
     loop = asyncio.get_event_loop()
     request_line = json.dumps({"type": "test"}) + "\n"
     
-    await loop.run_in_executor(None, proc.stdin.write, request_line)
-    await loop.run_in_executor(None, proc.stdin.flush)
+    try:
+        await loop.run_in_executor(None, proc.stdin.write, request_line)
+        await loop.run_in_executor(None, proc.stdin.flush)
+    except Exception:
+        pass
 
-    resp_line = await asyncio.wait_for(
-        loop.run_in_executor(None, proc.stdout.readline),
-        timeout
-    )
+    try:
+        resp_line = await asyncio.wait_for(
+            loop.run_in_executor(None, proc.stdout.readline),
+            timeout
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise RuntimeError("Test execution timed out (Worker forcefully killed).")
+
     if not resp_line:
-        raise RuntimeError("Runner process closed stdout. Possibly Syntax Error.")
+        # 进程已关闭，获取底层错误信息！
+        proc.poll()
+        err_msg = proc.stderr.read().strip() if proc.stderr else "Unknown Exit"
+        raise RuntimeError(f"Worker process crashed! \n[Worker Stderr]: {err_msg}")
+        
     return json.loads(resp_line)
 
-# ======= 修改：向 Worker 发送调用请求 =======
+
 async def call_runner(proc: subprocess.Popen, data, timeout=30):
-    """
-    向已存在的子进程发送一个请求（data 为 JSON 可序列化对象），
-    并等待响应。超时（默认30秒）后抛出异常。
-    """
     loop = asyncio.get_event_loop()
-    # 注意这里加入了 "type": "call"
     request_line = json.dumps({"type": "call", "data": data}) + "\n"
 
-    await loop.run_in_executor(None, proc.stdin.write, request_line)
-    await loop.run_in_executor(None, proc.stdin.flush)
+    try:
+        await loop.run_in_executor(None, proc.stdin.write, request_line)
+        await loop.run_in_executor(None, proc.stdin.flush)
+    except Exception:
+        pass
 
-    resp_line = await asyncio.wait_for(
-        loop.run_in_executor(None, proc.stdout.readline),
-        timeout
-    )
+    try:
+        resp_line = await asyncio.wait_for(
+            loop.run_in_executor(None, proc.stdout.readline),
+            timeout
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise RuntimeError("Call execution timed out (Worker forcefully killed).")
+
     if not resp_line:
-        raise RuntimeError("Runner process closed stdout")
+        proc.poll()
+        err_msg = proc.stderr.read().strip() if proc.stderr else "Unknown Exit"
+        raise RuntimeError(f"Worker process crashed! \n[Worker Stderr]: {err_msg}")
+        
     return json.loads(resp_line)
 
 # (保留 get_or_create_process, reap_idle_processes, shutdown_all_processes)

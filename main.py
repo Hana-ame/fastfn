@@ -1,9 +1,6 @@
 # main.py
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from pathlib import Path
-from typing import Any
+from fastapi import FastAPI
 
-# from routers import upload, call, delete, download
 from routers import upload, call
 from game import ws  # 导入刚才写的模块
 
@@ -26,7 +23,7 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,   # 开发时启用热重载
+        # reload=True,   # 开发时启用热重载
         log_level="info"
     )
 

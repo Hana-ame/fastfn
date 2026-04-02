@@ -1,87 +1,71 @@
 # routers/upload.py
 
 from fastapi import APIRouter, UploadFile, File, HTTPException
-import importlib.util
-import tempfile
 import time
-import os
+import asyncio
 
-from process_manager import processes, start_runner
-from consts import BASE_DIR, deep_equal
+from process_manager import processes, get_or_create_process, test_runner
+from consts import BASE_DIR
 
 router = APIRouter()
 
+
 @router.put("/{folder}/{filename}")
 async def upload(folder: str, filename: str, file: UploadFile = File(...)):
-    # 1. 安全检查：禁止路径遍历
+    # 1. 安全检查
     if ".." in folder or ".." in filename or "/" in folder:
         raise HTTPException(400, "Invalid folder or filename")
     if not filename.endswith(".py"):
         raise HTTPException(400, "Only .py files")
 
-    # 读取内容  
+    # 2. 读取并直接保存到目标路径（如果有错误我们会删掉它）
     content = await file.read()
-    code = content.decode("utf-8")
-
-    
-    # 将代码写入临时文件
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
-        tmp.write(code)
-        tmp_path = tmp.name
-
-    try:
-        # 动态加载临时模块
-        spec = importlib.util.spec_from_file_location("test_module", tmp_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        # 获取 testCases
-        test_cases = getattr(module, "testCases", None)
-        if not isinstance(test_cases, list):
-            raise HTTPException(400, "No valid testCases array")
-
-        # 运行测试
-        errors = []
-        for idx, tc in enumerate(test_cases):
-            if "input" not in tc or "expected" not in tc:
-                errors.append({"testCaseIndex": idx, "error": "Missing input/expected"})
-                continue
-            try:
-                actual = module.main(tc["input"])
-                if not deep_equal(actual, tc["expected"]):
-                    errors.append({
-                        "testCaseIndex": idx,
-                        "input": tc["input"],
-                        "expected": tc["expected"],
-                        "actual": actual
-                    })
-            except Exception as e:
-                errors.append({"testCaseIndex": idx, "error": str(e)})
-
-        if errors:
-            raise HTTPException(400, detail={"error": "Test cases failed", "details": errors})
-    finally:
-        os.unlink(tmp_path)   # 删除临时文件
-
-    # 2. 构建保存路径
     file_path = BASE_DIR / folder / filename
     file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # 3. 保存文件
     file_path.write_bytes(content)
-    
+
     key = f"{folder}/{filename}"
+
+    # 3. 如果这个函数之前在运行，杀掉旧的 Worker
     if key in processes:
-        old = processes[key]["proc"]
-        if old.poll() is None:
-            old.terminate()
-            old.wait(timeout=3)
+        old_proc = processes[key]["proc"]
+        if old_proc.poll() is None:
+            old_proc.terminate()
+            old_proc.wait(timeout=3)
         del processes[key]
-    # 可选：立即启动新进程（也可以不启动，等第一次调用时再启动）
-    # 如果希望上传后立即预热，可以取消注释下一行
-    proc = start_runner(file_path)
-    processes[key] = {"proc": proc, "last_used": time.time(), "code_path": file_path}
 
+    try:
+        # 4. 【核心】：建立全新的 Worker（文件在这里执行 import 动作）
+        proc = await get_or_create_process(key, file_path)
 
-    return {"message": "saved", "path": str(file_path)}
+        # 5. 向 Worker 发送指令，执行 testCases
+        test_result = await test_runner(proc, timeout=5.0)
 
+        # 如果测试不包含 success: True，说明测试报错
+        if test_result.get("error"):
+            raise Exception(test_result)
+
+        # 测试成功！Worker 现在保持存活，并且已经在内存中加载了模块
+        return {"message": "saved and pre-warmed", "path": str(file_path)}
+
+    except Exception as e:
+        # 6. 【回滚】：测试失败或语法错误，杀掉 Worker，清理无效文件
+        if key in processes:
+            err_proc = processes[key]["proc"]
+            if err_proc.poll() is None:
+                err_proc.terminate()
+            del processes[key]
+
+        file_path.unlink(missing_ok=True)  # 删除错误代码
+
+        # 提取报错信息返回给用户
+        if isinstance(e.args[0], dict):
+            raise HTTPException(400, detail=e.args[0])
+        elif isinstance(e, asyncio.TimeoutError):
+            raise HTTPException(
+                400, "Test execution timed out (possible infinite loop)."
+            )
+        else:
+            raise HTTPException(
+                400, detail={"error": "Worker or Code Error", "details": str(e)}
+            )

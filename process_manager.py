@@ -37,21 +37,35 @@ def start_runner(code_path: Path) -> subprocess.Popen:
         bufsize=1,               # 行缓冲，确保每条消息立即发送
     )
 
-# ==================== 与子进程通信 ====================
+# ======= 新增：向 Worker 发送测试请求 =======
+async def test_runner(proc: subprocess.Popen, timeout=10):
+    loop = asyncio.get_event_loop()
+    request_line = json.dumps({"type": "test"}) + "\n"
+    
+    await loop.run_in_executor(None, proc.stdin.write, request_line)
+    await loop.run_in_executor(None, proc.stdin.flush)
+
+    resp_line = await asyncio.wait_for(
+        loop.run_in_executor(None, proc.stdout.readline),
+        timeout
+    )
+    if not resp_line:
+        raise RuntimeError("Runner process closed stdout. Possibly Syntax Error.")
+    return json.loads(resp_line)
+
+# ======= 修改：向 Worker 发送调用请求 =======
 async def call_runner(proc: subprocess.Popen, data, timeout=30):
     """
     向已存在的子进程发送一个请求（data 为 JSON 可序列化对象），
     并等待响应。超时（默认30秒）后抛出异常。
     """
     loop = asyncio.get_event_loop()
-    # 构造请求：{"data": ...} 并添加换行符（子进程按行读取）
-    request_line = json.dumps({"data": data}) + "\n"
+    # 注意这里加入了 "type": "call"
+    request_line = json.dumps({"type": "call", "data": data}) + "\n"
 
-    # 写入 stdin（使用线程池避免阻塞事件循环）
     await loop.run_in_executor(None, proc.stdin.write, request_line)
     await loop.run_in_executor(None, proc.stdin.flush)
 
-    # 读取一行响应（子进程每次输出一行 JSON）
     resp_line = await asyncio.wait_for(
         loop.run_in_executor(None, proc.stdout.readline),
         timeout
@@ -60,7 +74,7 @@ async def call_runner(proc: subprocess.Popen, data, timeout=30):
         raise RuntimeError("Runner process closed stdout")
     return json.loads(resp_line)
 
-# ==================== 获取或创建进程（核心逻辑） ====================
+# (保留 get_or_create_process, reap_idle_processes, shutdown_all_processes)
 async def get_or_create_process(key: str, code_path: Path):
     """
     根据函数的唯一标识 key 获取其子进程。
@@ -69,33 +83,21 @@ async def get_or_create_process(key: str, code_path: Path):
     """
     # 1. 检查当前活跃函数数量是否已达上限
     if key not in processes and len(processes) >= MAX_FUNCTIONS:
-        # 尝试强制回收一些空闲进程（即清理掉超时的进程）
         await reap_idle_processes(force=True)
-        # 如果清理后依然超过限制，则拒绝创建
         if len(processes) >= MAX_FUNCTIONS:
             raise RuntimeError(f"Too many active functions (max {MAX_FUNCTIONS})")
 
-    # 2. 获取或创建进程记录
     info = processes.get(key)
     if info is None:
-        # 第一次创建：启动新进程
         proc = start_runner(code_path)
-        processes[key] = {
-            "proc": proc,
-            "last_used": time.time(),
-            "code_path": code_path
-        }
+        processes[key] = {"proc": proc, "last_used": time.time(), "code_path": code_path}
     else:
-        # 已有记录，检查进程是否还活着
         proc = info["proc"]
         if proc.poll() is not None:
-            # 进程已退出（可能崩溃或被外部杀死），重新启动
             proc = start_runner(code_path)
             processes[key]["proc"] = proc
             processes[key]["code_path"] = code_path
-        # 更新最后使用时间
         processes[key]["last_used"] = time.time()
-
     return processes[key]["proc"]
 
 # ==================== 空闲回收 ====================

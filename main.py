@@ -2,7 +2,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from pathlib import Path
 from typing import Any
-import importlib.util
 
 # from routers import upload, call, delete, download
 from routers import upload, call

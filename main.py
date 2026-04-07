@@ -4,10 +4,16 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from middleware import UploadBlockMiddleware  # ← 导入中间件
+
 from routers import upload, call
 from game import chess
+from repo import main as repo
 
-app = FastAPI()
+app = FastAPI(title="fastfn")
+
+# 📌 注册中间件（顺序很重要，建议放在最前面）
+app.add_middleware(UploadBlockMiddleware)
 
 # ==================== CORS 配置 ====================
 
@@ -51,6 +57,7 @@ async def dynamic_cors_for_post(request: Request, call_next):
 
 # 1. 挂载 chess 路由 (不再挂载静态文件)
 app.include_router(chess.router, prefix="/chess")
+app.include_router(repo.router, prefix="/repo")
 
 app.include_router(upload.router, prefix="/fastfn")
 app.include_router(call.router, prefix="/fastfn")

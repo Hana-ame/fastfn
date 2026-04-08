@@ -5,6 +5,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 # 🎚️ 全局开关：改这里即可控制上传功能
 ENABLE_CODE_UPLOAD = False 
+ENABLE_CODE_UPLOAD = True 
 
 class UploadBlockMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):

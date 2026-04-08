@@ -3,6 +3,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 import time
 import asyncio
+import traceback
 
 from process_manager import processes, get_or_create_process, test_runner
 from consts import BASE_DIR

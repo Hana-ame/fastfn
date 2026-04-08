@@ -3,6 +3,8 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
+from process_manager import shutdown_all_processes
 
 from middleware import UploadBlockMiddleware  # ← 导入中间件
 
@@ -10,7 +12,13 @@ from routers import upload, call
 from game import chess
 from repo import main as repo
 
-app = FastAPI(title="fastfn")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    # Cleanup on shutdown/reload
+    await shutdown_all_processes()
+
+app = FastAPI(title="fastfn", lifespan=lifespan)
 
 # 📌 注册中间件（顺序很重要，建议放在最前面）
 app.add_middleware(UploadBlockMiddleware)
@@ -74,6 +82,7 @@ async def custom_404_handler(request: Request, exc):
 
 # ==================== 启动配置 ====================
 
+# main.py
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
@@ -81,5 +90,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=True,
+        reload_excludes=["functions/*", "*/functions/*"],  # ← Add this
         log_level="info"
     )

@@ -11,6 +11,8 @@ from middleware import UploadBlockMiddleware  # ← 导入中间件
 from routers import upload, call
 from game import chess
 from repo import main as repo
+# main.py 顶部添加导入
+from routers import process   # 新增
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -63,12 +65,17 @@ app.add_middleware(
 
 # ==================== 路由挂载 ====================
 
+
+
 # 1. 挂载 chess 路由 (不再挂载静态文件)
 app.include_router(chess.router, prefix="/chess")
 app.include_router(repo.router, prefix="/repo")
 
 app.include_router(upload.router, prefix="/fastfn")
 app.include_router(call.router, prefix="/fastfn")
+
+# 路由挂载部分添加
+app.include_router(process.router)   # 不加 prefix，因为路由内部已经是 "/process"
 
 # ==================== 异常处理 ====================
 

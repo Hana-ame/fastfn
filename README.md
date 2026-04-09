@@ -7,6 +7,7 @@
 📁 .git
 📄 .gitignore
 📁 .pytest_cache
+📄 FEATURES.md
 📄 README.md
 📁 __pycache__
 📄 consts.py
@@ -17,6 +18,7 @@
 📄 out.txt
 📄 process_manager.py
 📁 repo
+📄 requirements.txt
 📁 routers
 📄 runner.py
 📁 test
@@ -35,4 +37,4 @@
 python main.py
 ```
 
-*生成时间: 2026-04-09 15:08:55*
+*生成时间: 2026-04-09 16:10:11*

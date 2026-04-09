@@ -11,8 +11,6 @@ from pydantic import BaseModel, field_validator
 
 # ============ 安全配置 ============
 ALLOW_UNSAFE = os.getenv("ALLOW_CODE_EXECUTION", "false").lower() == "true"
-# 注意：原代码中有一行 `ALLOW_UNSAFE = True` 测试用，这里我们完全遵守环境变量，
-# 若你想测试可以临时设置环境变量 ALLOW_CODE_EXECUTION=true
 ALLOW_UNSAFE = True
 
 router = APIRouter()
@@ -21,7 +19,7 @@ router = APIRouter()
 class TextRequest(BaseModel):
     text: str
     operation: str = "execute_markdown"
-    cwd: str = ""  # 新增：执行路径 (Current Working Directory)
+    cwd: str = ""  # 执行路径 (Current Working Directory)
 
     @field_validator('operation')
     @classmethod
@@ -48,11 +46,18 @@ def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
     # 确定 bash 执行路径
     bash_exe = "/bin/bash"
     if os.name == "nt":
-        git_bash_path = r"C:\Program Files\Git\usr\bin\bash.exe"
+        # 【修复点 1】: 使用 bin\bash.exe 而不是 usr\bin\bash.exe 
+        # bin\bash.exe 会预先初始化 MSYS2 环境，确保不论 cwd 在哪里，都能找到 ls 等系统命令
+        git_bash_path = r"C:\Program Files\Git\bin\bash.exe"
         if os.path.exists(git_bash_path):
             bash_exe = git_bash_path
         else:
-            bash_exe = "bash"  # 如果没找到，降级使用环境变量中的 bash
+            fallback_path = r"C:\Program Files\Git\usr\bin\bash.exe"
+            if os.path.exists(fallback_path):
+                bash_exe = fallback_path
+            else:
+                print("not found git bash")
+                bash_exe = "bash" 
             
     # 检查 cwd 是否有效
     run_cwd = cwd if cwd and os.path.isdir(cwd) else None
@@ -61,19 +66,22 @@ def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
 
     temp_file_path = None
     try:
-        # 将代码保存到临时文件中
         with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False, encoding='utf-8') as f:
             f.write(code)
             temp_file_path = f.name
         
-        # 运行保存的 sh 文件 (加入 cwd 参数)
+        # 【修复点 2】: 拷贝当前环境变量，防止 cwd 切换导致 PATH 丢失
+        env = os.environ.copy()
+        
+        # 运行保存的 sh 文件
         result = subprocess.run(
             [bash_exe, temp_file_path], 
             capture_output=True, 
             text=True, 
             timeout=180,
             encoding='utf-8',
-            cwd=run_cwd
+            cwd=run_cwd,
+            env=env  # 显式注入环境
         )
         
         stdout = result.stdout.strip() if result.stdout else ""
@@ -85,7 +93,6 @@ def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
     except Exception as e:
         return "", f"执行错误: {str(e)}"
     finally:
-        # 清理临时文件
         if temp_file_path and os.path.exists(temp_file_path):
             try:
                 os.remove(temp_file_path)
@@ -98,7 +105,6 @@ def execute_python(code: str, cwd: str = "") -> Tuple[str, str]:
         if "print(" not in code and "import" not in code:
             return "", "[安全限制] 仅允许 print/import"
     
-    # 检查 cwd 是否有效
     run_cwd = cwd if cwd and os.path.isdir(cwd) else None
     if cwd and not run_cwd:
         return "", f"执行错误: 指定的目录不存在 ({cwd})"
@@ -109,14 +115,15 @@ def execute_python(code: str, cwd: str = "") -> Tuple[str, str]:
             f.write(code)
             temp_file_path = f.name
         
-        # 加入 cwd 参数
+        env = os.environ.copy()
         result = subprocess.run(
             [sys.executable, temp_file_path], 
             capture_output=True, 
             text=True, 
             timeout=10,
             encoding='utf-8',
-            cwd=run_cwd
+            cwd=run_cwd,
+            env=env
         )
         
         stdout = result.stdout.strip() if result.stdout else ""
@@ -139,6 +146,7 @@ def execute_python(code: str, cwd: str = "") -> Tuple[str, str]:
                 pass
 
 # ============ 栈解析逻辑 ============
+# ... (process_markdown 和 _handle_closed_block 保持原样不变)
 def process_markdown(markdown_text: str, cwd: str = "") -> str:
     lines = markdown_text.splitlines(keepends=False)
     output_lines = []
@@ -172,7 +180,7 @@ def process_markdown(markdown_text: str, cwd: str = "") -> str:
                 else:
                     current_block['end_line'] = line
                     closed_block = stack.pop()
-                    processed_lines = _handle_closed_block(closed_block, cwd) # 传入 cwd
+                    processed_lines = _handle_closed_block(closed_block, cwd)
                     if stack:
                         stack[-1]['content_lines'].extend(processed_lines)
                     else:
@@ -277,17 +285,22 @@ def process_text(text: str, operation: str, cwd: str = "") -> str:
         if not ALLOW_UNSAFE:
             return "[安全限制]"
         try:
-            run_cwd = cwd if cwd and os.path.isdir(cwd) else None
-            return subprocess.run(text, shell=True, capture_output=True, text=True, timeout=2, cwd=run_cwd).stdout.strip()
-        except:
-            return "执行出错"
+            # 【修复点 3】: 不要用 subprocess.run(shell=True)
+            # 在 Windows 上 shell=True 会调用 CMD (cmd 不支持 ls)
+            # 这里统一复用上方的 execute_bash 执行器，真正执行 bash
+            stdout, stderr = execute_bash(text, cwd)
+            res = stdout.strip()
+            if stderr:
+                res += "\n[stderr]\n" + stderr.strip()
+            return res.strip()
+        except Exception as e:
+            return f"执行出错: {e}"
     return text
 
 # ============ 路由端点 ============
 @router.post("/process", response_model=TextResponse)
 async def process_endpoint(request: TextRequest):
     try:
-        # 将新增的 cwd 传入
         result = process_text(request.text, request.operation, request.cwd)
         return TextResponse(
             result=result,

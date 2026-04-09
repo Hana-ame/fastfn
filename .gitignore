@@ -1,6 +1,29 @@
-__pycache__
+# 编译产物
+__pycache__/
+*.py[cod]
+*.so
 
-functions
-temp
+# 虚拟环境
+venv/
+env/
+.env
 
-*.txt
+# IDE 配置
+.vscode/
+.idea/
+
+# 临时文件
+*.log
+*.tmp
+temp/
+out.txt
+
+# 用户上传代码目录（运行时生成）
+functions/
+
+# 测试缓存
+.pytest_cache/
+
+# 操作系统生成文件
+.DS_Store
+Thumbs.db

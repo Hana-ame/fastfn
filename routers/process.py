@@ -44,11 +44,31 @@ def execute_bash(code: str) -> Tuple[str, str]:
         if not any(code.strip().startswith(p) for p in allowed):
             return "", f"[安全限制] 仅允许: {', '.join(allowed)}"
     
+    # 确定 bash 执行路径
+    bash_exe = "/bin/bash"
+    if os.name == "nt":
+        git_bash_path = r"C:\Program Files\Git\usr\bin\bash.exe"
+        if os.path.exists(git_bash_path):
+            bash_exe = git_bash_path
+        else:
+            bash_exe = "bash"  # 如果没找到，降级使用环境变量中的 bash
+            
+    temp_file_path = None
     try:
+        # 将代码保存到临时文件中
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False, encoding='utf-8') as f:
+            f.write(code)
+            temp_file_path = f.name
+        
+        # 运行保存的 sh 文件
         result = subprocess.run(
-            code, shell=True, capture_output=True, text=True, timeout=180,
-            executable="/bin/bash" if os.name != "nt" else None
+            [bash_exe, temp_file_path], 
+            capture_output=True, 
+            text=True, 
+            timeout=180,
+            encoding='utf-8'
         )
+        
         stdout = result.stdout.strip() if result.stdout else ""
         stderr = result.stderr.strip() if result.stderr else ""
         return stdout, stderr
@@ -57,6 +77,13 @@ def execute_bash(code: str) -> Tuple[str, str]:
         return "", "错误：命令执行超时（180秒）"
     except Exception as e:
         return "", f"执行错误: {str(e)}"
+    finally:
+        # 清理临时文件
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except Exception:
+                pass
 
 def execute_python(code: str) -> Tuple[str, str]:
     """执行 Python 代码，返回 (stdout, stderr)"""

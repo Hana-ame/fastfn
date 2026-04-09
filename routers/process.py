@@ -20,6 +20,7 @@ class TextRequest(BaseModel):
     text: str
     operation: str = "execute_markdown"
     cwd: str = ""  # 执行路径 (Current Working Directory)
+    timeout: int = 60  # 执行超时时间（秒）
 
     @field_validator('operation')
     @classmethod
@@ -36,7 +37,7 @@ class TextResponse(BaseModel):
     processed_length: int
 
 # ============ 执行器 ============
-def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
+def execute_bash(code: str, cwd: str = "", timeout: int = 60) -> Tuple[str, str]:
     """执行 Bash 代码，返回 (stdout, stderr)"""
     if not ALLOW_UNSAFE:
         allowed = ("echo", "ls", "pwd", "date", "whoami", "cat ")
@@ -74,7 +75,7 @@ def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
             [bash_exe, temp_file_path], 
             capture_output=True, 
             text=True, 
-            timeout=60,
+            timeout=timeout,
             encoding='utf-8',
             cwd=run_cwd,
             env=env
@@ -85,7 +86,7 @@ def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
         return stdout, stderr
         
     except subprocess.TimeoutExpired:
-        return "", "错误：命令执行超时（180秒）"
+        return "", f"错误：命令执行超时（{timeout}秒）"
     except Exception as e:
         return "", f"执行错误: {str(e)}"
     finally:
@@ -95,7 +96,7 @@ def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
             except Exception:
                 pass
 
-def execute_python(code: str, cwd: str = "") -> Tuple[str, str]:
+def execute_python(code: str, cwd: str = "", timeout: int = 10) -> Tuple[str, str]:
     """执行 Python 代码，返回 (stdout, stderr)"""
     if not ALLOW_UNSAFE:
         if "print(" not in code and "import" not in code:
@@ -116,7 +117,7 @@ def execute_python(code: str, cwd: str = "") -> Tuple[str, str]:
             [sys.executable, temp_file_path], 
             capture_output=True, 
             text=True, 
-            timeout=10,
+            timeout=timeout,
             encoding='utf-8',
             cwd=run_cwd,
             env=env
@@ -131,7 +132,7 @@ def execute_python(code: str, cwd: str = "") -> Tuple[str, str]:
         return stdout, stderr
         
     except subprocess.TimeoutExpired:
-        return "", "错误：Python 执行超时（10秒）"
+        return "", f"错误：Python 执行超时（{timeout}秒）"
     except Exception as e:
         return "", f"执行错误: {str(e)}"
     finally:
@@ -161,7 +162,7 @@ def strip_output_blocks(markdown_text: str) -> str:
             result.append(line)
     return ''.join(result)
 
-def process_markdown(markdown_text: str, cwd: str = "") -> str:
+def process_markdown(markdown_text: str, cwd: str = "", timeout: int = 60) -> str:
     # 第一步：清理历史输出块
     markdown_text = strip_output_blocks(markdown_text)
     lines = markdown_text.splitlines(keepends=False)
@@ -186,7 +187,7 @@ def process_markdown(markdown_text: str, cwd: str = "") -> str:
                 # 结束当前块
                 current['end_line'] = line
                 closed = stack.pop()
-                processed = _handle_closed_block(closed, cwd)
+                processed = _handle_closed_block(closed, cwd, timeout)
                 if stack:
                     stack[-1]['content_lines'].extend(processed)
                 else:
@@ -234,7 +235,7 @@ def process_markdown(markdown_text: str, cwd: str = "") -> str:
 
     return '\n'.join(output_lines)
 
-def _handle_closed_block(block: Dict[str, Any], cwd: str) -> List[str]:
+def _handle_closed_block(block: Dict[str, Any], cwd: str, timeout: int) -> List[str]:
     result_lines = []
     lang = block['lang']
     indent = block['indent']
@@ -254,9 +255,9 @@ def _handle_closed_block(block: Dict[str, Any], cwd: str) -> List[str]:
         stdout_text, stderr_text = "", ""
         
         if is_bash:
-            stdout_text, stderr_text = execute_bash(code_content, cwd)
+            stdout_text, stderr_text = execute_bash(code_content, cwd, timeout)
         else:
-            stdout_text, stderr_text = execute_python(code_content, cwd)
+            stdout_text, stderr_text = execute_python(code_content, cwd, timeout)
         
         if stdout_text:
             result_lines.append(f"{indent}```stdout")
@@ -278,9 +279,9 @@ def _handle_closed_block(block: Dict[str, Any], cwd: str) -> List[str]:
     return result_lines
 
 # ============ 文本处理主函数 ============
-def process_text(text: str, operation: str, cwd: str = "") -> str:
+def process_text(text: str, operation: str, cwd: str = "", timeout: int = 60) -> str:
     if operation == "execute_markdown":
-        return process_markdown(text, cwd)
+        return process_markdown(text, cwd, timeout)
     elif operation == "strip_output_blocks":
         return strip_output_blocks(text)
     elif operation == "reverse":
@@ -310,7 +311,7 @@ def process_text(text: str, operation: str, cwd: str = "") -> str:
 @router.post("/process", response_model=TextResponse)
 async def process_endpoint(request: TextRequest):
     try:
-        result = process_text(request.text, request.operation, request.cwd)
+        result = process_text(request.text, request.operation, request.cwd, request.timeout)
         return TextResponse(
             result=result,
             operation=request.operation,

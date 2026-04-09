@@ -25,7 +25,7 @@ class TextRequest(BaseModel):
     @field_validator('operation')
     @classmethod
     def validate_operation(cls, v):
-        allowed = {"reverse", "uppercase", "lowercase", "bash", "count", "trim", "execute_markdown", "strip_output_blocks"}
+        allowed = {"execute_markdown"}
         if v not in allowed:
             raise ValueError(f"不支持的操作: {v}")
         return v
@@ -282,30 +282,9 @@ def _handle_closed_block(block: Dict[str, Any], cwd: str, timeout: int) -> List[
 def process_text(text: str, operation: str, cwd: str = "", timeout: int = 60) -> str:
     if operation == "execute_markdown":
         return process_markdown(text, cwd, timeout)
-    elif operation == "strip_output_blocks":
-        return strip_output_blocks(text)
-    elif operation == "reverse":
-        return text[::-1]
-    elif operation == "uppercase":
-        return text.upper()
-    elif operation == "lowercase":
-        return text.lower()
-    elif operation == "count":
-        return f"行数: {len(text.splitlines())}, 字符数: {len(text)}"
-    elif operation == "trim":
-        return text.strip()
-    elif operation == "bash":
-        if not ALLOW_UNSAFE:
-            return "[安全限制]"
-        try:
-            stdout, stderr = execute_bash(text, cwd)
-            res = stdout.strip()
-            if stderr:
-                res += "\n[stderr]\n" + stderr.strip()
-            return res.strip()
-        except Exception as e:
-            return f"执行出错: {e}"
-    return text
+    else:
+        raise ValueError(f"不支持的操作: {operation}，仅允许 execute_markdown")
+
 
 # ============ 路由端点 ============
 @router.post("/process", response_model=TextResponse)

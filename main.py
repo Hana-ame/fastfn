@@ -43,23 +43,23 @@ app.add_middleware(
 # 下面提供一个【自定义中间件】方案，完全符合你的描述：
 # "当遇到 POST 时，allow origin 动态设置为来路 origin"
 
-@app.middleware("http")
-async def dynamic_cors_for_post(request: Request, call_next):
-    # 获取请求来源
-    origin = request.headers.get("origin")
+# @app.middleware("http")
+# async def dynamic_cors_for_post(request: Request, call_next):
+#     # 获取请求来源
+#     origin = request.headers.get("origin")
     
-    # 先执行路由处理
-    response = await call_next(request)
+#     # 先执行路由处理
+#     response = await call_next(request)
     
-    # 如果是 POST 请求且存在 Origin 头，动态添加 CORS 头
-    # 注意：OPTIONS 预检请求由上面的 CORSMiddleware 处理，这里只需处理实际请求
-    if request.method == "POST" and origin:
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "*"
+#     # 如果是 POST 请求且存在 Origin 头，动态添加 CORS 头
+#     # 注意：OPTIONS 预检请求由上面的 CORSMiddleware 处理，这里只需处理实际请求
+#     if request.method == "POST" and origin:
+#         response.headers["Access-Control-Allow-Origin"] = origin
+#         response.headers["Access-Control-Allow-Credentials"] = "true"
+#         response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+#         response.headers["Access-Control-Allow-Headers"] = "*"
         
-    return response
+#     return response
 
 # ==================== 路由挂载 ====================
 
@@ -90,6 +90,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=True,
-        reload_excludes=["functions/*", "*/functions/*"],  # ← Add this
+        reload_excludes=["*functions*", "*functions*/*", "*functions*/**/*"],  
         log_level="info"
     )

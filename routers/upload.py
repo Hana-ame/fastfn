@@ -30,8 +30,9 @@ async def upload(folder: str, filename: str, file: UploadFile = File(...)):
     if key in processes:
         old_proc = processes[key]["proc"]
         if old_proc.poll() is None:
-            old_proc.terminate()
-            old_proc.wait(timeout=3)
+            old_proc.kill()  # 直接斩杀，绝不留情，也不会阻塞协程
+            # old_proc.terminate()
+            # old_proc.wait(timeout=3)
         del processes[key]
 
     try:

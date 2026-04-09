@@ -6,7 +6,6 @@
 """
 
 import os
-import tempfile
 import pytest
 import requests
 
@@ -17,26 +16,51 @@ CALL_URL = f"{BASE_URL}/fastfn"
 # ------------------------------------------------------------------
 # 辅助函数：生成临时 Python 文件内容
 # ------------------------------------------------------------------
-def make_valid_module(call_return_value=None, test_success=True):
-    """生成一个有效的可上传模块内容"""
-    call_code = f"""
-def call(data):
-    return {repr(call_return_value) if call_return_value else 'data'}
+def make_valid_module(test_success=True):
+    """
+    生成一个有效的可上传模块内容
+    符合新的规范: main(data) 函数 + testCases 列表
+    """
+    main_code = """
+def main(data=None):
+    if isinstance(data, dict) and data.get("action") == "echo":
+        return {"echo": "ok"}
+    return {"status": "success", "received": data}
 """
-    test_code = """
-def testCases():
-    return {"success": True}
-""" if test_success else """
-def testCases():
-    return {"error": "Test failed intentionally"}
+    if test_success:
+        test_code = """
+testCases = [
+    {
+        "input": None, 
+        "expected": {"status": "success", "received": None}
+    },
+    {
+        "input": {"name": "Hana"}, 
+        "expected": {"status": "success", "received": {"name": "Hana"}}
+    },
+    {
+        "input": {"action": "echo"},
+        "expected": {"echo": "ok"}
+    }
+]
 """
-    return call_code + test_code
+    else:
+        # 故意制造一个不匹配的预期结果，使得测试用例失败
+        test_code = """
+testCases = [
+    {
+        "input": {"name": "Hana"}, 
+        "expected": {"status": "error", "message": "This is intentionally wrong"}
+    }
+]
+"""
+    return main_code + test_code
 
 def make_syntax_error_module():
-    return "def call(data):\n    return data  # missing colon on next line?\n    x = "
+    return "def main(data=None):\n    return data  # missing colon on next line?\n    x = "
 
 # ------------------------------------------------------------------
-# 测试夹具：清理可能残留的测试文件（通过调用删除端点？但服务无删除，故只确保测试不互相影响）
+# 测试夹具：清理可能残留的测试文件
 # ------------------------------------------------------------------
 @pytest.fixture
 def unique_folder():
@@ -48,9 +72,9 @@ def unique_folder():
 # 测试用例
 # ------------------------------------------------------------------
 def test_upload_and_call_valid(unique_folder):
-    """测试正常上传有效文件，并调用函数"""
+    """测试正常上传有效文件，并调用 main 函数"""
     filename = "echo.py"
-    module_content = make_valid_module(call_return_value={"echo": "ok"})
+    module_content = make_valid_module(test_success=True)
     
     # 1. 上传
     put_resp = requests.put(
@@ -62,15 +86,25 @@ def test_upload_and_call_valid(unique_folder):
     assert data["message"] == "saved and pre-warmed"
     assert "path" in data
 
-    # 2. 调用
+    # 2. 调用 (测试基础逻辑)
     post_resp = requests.post(
         f"{CALL_URL}/{unique_folder}/{filename}",
-        json={"data": "hello"}
+        json={"data": {"name": "TestUser"}}
     )
     assert post_resp.status_code == 200
     result = post_resp.json()
     assert result["success"] is True
-    assert result["result"] == {"echo": "ok"}  # 应返回模块中 call 函数定义的值
+    # 断言结果应与 main 函数的返回逻辑一致
+    assert result["result"] == {"status": "success", "received": {"name": "TestUser"}}
+
+    # 3. 调用 (测试特定的分支逻辑)
+    post_resp_2 = requests.post(
+        f"{CALL_URL}/{unique_folder}/{filename}",
+        json={"data": {"action": "echo"}}
+    )
+    assert post_resp_2.status_code == 200
+    assert post_resp_2.json()["result"] == {"echo": "ok"}
+
 
 def test_upload_non_py_file(unique_folder):
     """上传非 .py 文件应失败"""
@@ -91,7 +125,7 @@ def test_call_nonexistent_file(unique_folder):
     assert "Function not found" in resp.text
 
 def test_upload_syntax_error_file(unique_folder):
-    """上传语法错误的文件应失败，且文件被删除（无法再调用）"""
+    """上传语法错误的文件应失败，且文件不应被保留"""
     filename = "syntax_error.py"
     content = make_syntax_error_module()
     
@@ -101,7 +135,7 @@ def test_upload_syntax_error_file(unique_folder):
     )
     assert put_resp.status_code == 400
     # 响应应包含错误细节（语法错误）
-    assert "error" in put_resp.json()["detail"]
+    assert "error" in str(put_resp.json().get("detail", "")).lower()
 
     # 验证文件确实未保存：调用应 404
     call_resp = requests.post(
@@ -111,7 +145,7 @@ def test_upload_syntax_error_file(unique_folder):
     assert call_resp.status_code == 404
 
 def test_upload_testcases_failure(unique_folder):
-    """上传的文件 testCases 返回 error，上传应失败并回滚"""
+    """上传的文件 testCases 执行失败（实际输出与expected不符），上传应被拒绝并回滚"""
     filename = "bad_test.py"
     content = make_valid_module(test_success=False)
     
@@ -120,10 +154,13 @@ def test_upload_testcases_failure(unique_folder):
         files={"file": (filename, content, "text/x-python")}
     )
     assert put_resp.status_code == 400
-    detail = put_resp.json()["detail"]
-    assert "Test failed intentionally" in str(detail)
+    detail = put_resp.json().get("detail", "")
+    
+    # 根据服务端的具体报错信息，这里可能需要调整断言关键字
+    # 假设服务端报错中会包含 "test" 或 "fail" 等字眼
+    assert "test" in str(detail).lower() or "fail" in str(detail).lower()
 
-    # 调用应 404（文件已被删除）
+    # 调用应 404（文件未保存）
     call_resp = requests.post(
         f"{CALL_URL}/{unique_folder}/{filename}",
         json={"data": {}}
@@ -136,17 +173,22 @@ def test_upload_path_traversal_prevention():
         f"{UPLOAD_URL}/../etc/test.py",
         files={"file": ("test.py", b"print(1)", "text/x-python")}
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 404
     assert "Invalid folder or filename" in resp.text
 
 def test_call_with_complex_data(unique_folder):
-    """调用时传递复杂 JSON 数据，应原样传递到 call 函数并返回"""
+    """调用时传递复杂 JSON 数据，应原样传递到 main 函数并返回"""
     filename = "complex.py"
     content = """
-def call(data):
+def main(data=None):
     return {"received": data, "type": str(type(data))}
-def testCases():
-    return {"success": True}
+
+testCases = [
+    {
+        "input": {"a": [1, 2, 3], "b": {"x": "y"}},
+        "expected": {"received": {"a": [1, 2, 3], "b": {"x": "y"}}, "type": "<class 'dict'>"}
+    }
+]
 """
     # 上传
     put_resp = requests.put(

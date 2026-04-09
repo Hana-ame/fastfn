@@ -21,6 +21,7 @@ router = APIRouter()
 class TextRequest(BaseModel):
     text: str
     operation: str = "execute_markdown"
+    cwd: str = ""  # 新增：执行路径 (Current Working Directory)
 
     @field_validator('operation')
     @classmethod
@@ -37,7 +38,7 @@ class TextResponse(BaseModel):
     processed_length: int
 
 # ============ 执行器 ============
-def execute_bash(code: str) -> Tuple[str, str]:
+def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
     """执行 Bash 代码，返回 (stdout, stderr)"""
     if not ALLOW_UNSAFE:
         allowed = ("echo", "ls", "pwd", "date", "whoami", "cat ")
@@ -53,6 +54,11 @@ def execute_bash(code: str) -> Tuple[str, str]:
         else:
             bash_exe = "bash"  # 如果没找到，降级使用环境变量中的 bash
             
+    # 检查 cwd 是否有效
+    run_cwd = cwd if cwd and os.path.isdir(cwd) else None
+    if cwd and not run_cwd:
+        return "", f"执行错误: 指定的目录不存在 ({cwd})"
+
     temp_file_path = None
     try:
         # 将代码保存到临时文件中
@@ -60,13 +66,14 @@ def execute_bash(code: str) -> Tuple[str, str]:
             f.write(code)
             temp_file_path = f.name
         
-        # 运行保存的 sh 文件
+        # 运行保存的 sh 文件 (加入 cwd 参数)
         result = subprocess.run(
             [bash_exe, temp_file_path], 
             capture_output=True, 
             text=True, 
             timeout=180,
-            encoding='utf-8'
+            encoding='utf-8',
+            cwd=run_cwd
         )
         
         stdout = result.stdout.strip() if result.stdout else ""
@@ -85,24 +92,31 @@ def execute_bash(code: str) -> Tuple[str, str]:
             except Exception:
                 pass
 
-def execute_python(code: str) -> Tuple[str, str]:
+def execute_python(code: str, cwd: str = "") -> Tuple[str, str]:
     """执行 Python 代码，返回 (stdout, stderr)"""
     if not ALLOW_UNSAFE:
         if "print(" not in code and "import" not in code:
             return "", "[安全限制] 仅允许 print/import"
     
+    # 检查 cwd 是否有效
+    run_cwd = cwd if cwd and os.path.isdir(cwd) else None
+    if cwd and not run_cwd:
+        return "", f"执行错误: 指定的目录不存在 ({cwd})"
+
     temp_file_path = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
             f.write(code)
             temp_file_path = f.name
         
+        # 加入 cwd 参数
         result = subprocess.run(
             [sys.executable, temp_file_path], 
             capture_output=True, 
             text=True, 
             timeout=10,
-            encoding='utf-8'
+            encoding='utf-8',
+            cwd=run_cwd
         )
         
         stdout = result.stdout.strip() if result.stdout else ""
@@ -125,7 +139,7 @@ def execute_python(code: str) -> Tuple[str, str]:
                 pass
 
 # ============ 栈解析逻辑 ============
-def process_markdown(markdown_text: str) -> str:
+def process_markdown(markdown_text: str, cwd: str = "") -> str:
     lines = markdown_text.splitlines(keepends=False)
     output_lines = []
     stack = []
@@ -158,7 +172,7 @@ def process_markdown(markdown_text: str) -> str:
                 else:
                     current_block['end_line'] = line
                     closed_block = stack.pop()
-                    processed_lines = _handle_closed_block(closed_block)
+                    processed_lines = _handle_closed_block(closed_block, cwd) # 传入 cwd
                     if stack:
                         stack[-1]['content_lines'].extend(processed_lines)
                     else:
@@ -202,7 +216,7 @@ def process_markdown(markdown_text: str) -> str:
 
     return '\n'.join(output_lines)
 
-def _handle_closed_block(block: Dict[str, Any]) -> List[str]:
+def _handle_closed_block(block: Dict[str, Any], cwd: str) -> List[str]:
     result_lines = []
     lang = block['lang']
     indent = block['indent']
@@ -222,9 +236,9 @@ def _handle_closed_block(block: Dict[str, Any]) -> List[str]:
         stdout_text, stderr_text = "", ""
         
         if is_bash:
-            stdout_text, stderr_text = execute_bash(code_content)
+            stdout_text, stderr_text = execute_bash(code_content, cwd)
         else:
-            stdout_text, stderr_text = execute_python(code_content)
+            stdout_text, stderr_text = execute_python(code_content, cwd)
         
         if stdout_text:
             result_lines.append(f"{indent}```stdout")
@@ -246,9 +260,9 @@ def _handle_closed_block(block: Dict[str, Any]) -> List[str]:
     return result_lines
 
 # ============ 文本处理主函数 ============
-def process_text(text: str, operation: str) -> str:
+def process_text(text: str, operation: str, cwd: str = "") -> str:
     if operation == "execute_markdown":
-        return process_markdown(text)
+        return process_markdown(text, cwd)
     elif operation == "reverse":
         return text[::-1]
     elif operation == "uppercase":
@@ -263,7 +277,8 @@ def process_text(text: str, operation: str) -> str:
         if not ALLOW_UNSAFE:
             return "[安全限制]"
         try:
-            return subprocess.run(text, shell=True, capture_output=True, text=True, timeout=2).stdout.strip()
+            run_cwd = cwd if cwd and os.path.isdir(cwd) else None
+            return subprocess.run(text, shell=True, capture_output=True, text=True, timeout=2, cwd=run_cwd).stdout.strip()
         except:
             return "执行出错"
     return text
@@ -272,7 +287,8 @@ def process_text(text: str, operation: str) -> str:
 @router.post("/process", response_model=TextResponse)
 async def process_endpoint(request: TextRequest):
     try:
-        result = process_text(request.text, request.operation)
+        # 将新增的 cwd 传入
+        result = process_text(request.text, request.operation, request.cwd)
         return TextResponse(
             result=result,
             operation=request.operation,

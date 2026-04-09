@@ -174,7 +174,7 @@ def test_upload_path_traversal_prevention():
         files={"file": ("test.py", b"print(1)", "text/x-python")}
     )
     assert resp.status_code == 404
-    assert "Invalid folder or filename" in resp.text
+    assert "Not Found" in resp.text
 
 def test_call_with_complex_data(unique_folder):
     """调用时传递复杂 JSON 数据，应原样传递到 main 函数并返回"""

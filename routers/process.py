@@ -74,7 +74,7 @@ def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
             [bash_exe, temp_file_path], 
             capture_output=True, 
             text=True, 
-            timeout=180,
+            timeout=60,
             encoding='utf-8',
             cwd=run_cwd,
             env=env

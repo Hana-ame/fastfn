@@ -24,7 +24,7 @@ class TextRequest(BaseModel):
     @field_validator('operation')
     @classmethod
     def validate_operation(cls, v):
-        allowed = {"reverse", "uppercase", "lowercase", "bash", "count", "trim", "execute_markdown"}
+        allowed = {"reverse", "uppercase", "lowercase", "bash", "count", "trim", "execute_markdown", "strip_output_blocks"}
         if v not in allowed:
             raise ValueError(f"不支持的操作: {v}")
         return v
@@ -142,7 +142,28 @@ def execute_python(code: str, cwd: str = "") -> Tuple[str, str]:
                 pass
 
 # ============ 栈解析逻辑（修复死循环问题） ============
+
+def strip_output_blocks(markdown_text: str) -> str:
+    """移除 Markdown 中所有 ```stdout 和 ```stderr 代码块及其内容"""
+    lines = markdown_text.splitlines(keepends=True)
+    result = []
+    in_output_block = False
+    for line in lines:
+        # 检测输出块开始标记（支持任意缩进和大小写）
+        if re.match(r'^\s*```(stdout|stderr)\s*$', line, re.IGNORECASE):
+            in_output_block = True
+            continue
+        # 当处于输出块内时，遇到单独的 ``` 即结束
+        if in_output_block and re.match(r'^\s*```\s*$', line):
+            in_output_block = False
+            continue
+        if not in_output_block:
+            result.append(line)
+    return ''.join(result)
+
 def process_markdown(markdown_text: str, cwd: str = "") -> str:
+    # 第一步：清理历史输出块
+    markdown_text = strip_output_blocks(markdown_text)
     lines = markdown_text.splitlines(keepends=False)
     output_lines = []
     stack = []
@@ -260,6 +281,8 @@ def _handle_closed_block(block: Dict[str, Any], cwd: str) -> List[str]:
 def process_text(text: str, operation: str, cwd: str = "") -> str:
     if operation == "execute_markdown":
         return process_markdown(text, cwd)
+    elif operation == "strip_output_blocks":
+        return strip_output_blocks(text)
     elif operation == "reverse":
         return text[::-1]
     elif operation == "uppercase":

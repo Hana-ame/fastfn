@@ -46,8 +46,6 @@ def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
     # 确定 bash 执行路径
     bash_exe = "/bin/bash"
     if os.name == "nt":
-        # 【修复点 1】: 使用 bin\bash.exe 而不是 usr\bin\bash.exe 
-        # bin\bash.exe 会预先初始化 MSYS2 环境，确保不论 cwd 在哪里，都能找到 ls 等系统命令
         git_bash_path = r"C:\Program Files\Git\bin\bash.exe"
         if os.path.exists(git_bash_path):
             bash_exe = git_bash_path
@@ -70,10 +68,8 @@ def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
             f.write(code)
             temp_file_path = f.name
         
-        # 【修复点 2】: 拷贝当前环境变量，防止 cwd 切换导致 PATH 丢失
         env = os.environ.copy()
         
-        # 运行保存的 sh 文件
         result = subprocess.run(
             [bash_exe, temp_file_path], 
             capture_output=True, 
@@ -81,7 +77,7 @@ def execute_bash(code: str, cwd: str = "") -> Tuple[str, str]:
             timeout=180,
             encoding='utf-8',
             cwd=run_cwd,
-            env=env  # 显式注入环境
+            env=env
         )
         
         stdout = result.stdout.strip() if result.stdout else ""
@@ -145,57 +141,51 @@ def execute_python(code: str, cwd: str = "") -> Tuple[str, str]:
             except Exception:
                 pass
 
-# ============ 栈解析逻辑 ============
-# ... (process_markdown 和 _handle_closed_block 保持原样不变)
+# ============ 栈解析逻辑（修复死循环问题） ============
 def process_markdown(markdown_text: str, cwd: str = "") -> str:
     lines = markdown_text.splitlines(keepends=False)
     output_lines = []
     stack = []
 
     i = 0
-    while i < len(lines):
+    n = len(lines)
+    while i < n:
         line = lines[i]
-        start_marker_match = re.match(r'^(\s*)(`{3,})(\w+)\s*$', line)
-
+        # 检查是否是开始标记
+        start_match = re.match(r'^(\s*)(`{3,})(\w*)\s*$', line)
+        
         if stack:
-            current_block = stack[-1]
-            min_ticks = current_block['backtick_count']
+            # 当前在代码块内部，检查是否遇到结束标记
+            current = stack[-1]
+            min_ticks = current['backtick_count']
+            # 结束标记：相同或更多的反引号，且之后没有语言标识
             end_match = re.match(rf'^(\s*)(`{{{min_ticks},}})\s*$', line)
             
             if end_match:
-                if start_marker_match:
-                    indent = start_marker_match.group(1)
-                    backticks = start_marker_match.group(2)
-                    lang = start_marker_match.group(3).lower()
-                    stack.append({
-                        'lang': lang,
-                        'indent': indent,
-                        'backtick_count': len(backticks),
-                        'start_line': line,
-                        'content_lines': [],
-                        'end_line': None
-                    })
-                    i += 1
-                    continue
+                # 结束当前块
+                current['end_line'] = line
+                closed = stack.pop()
+                processed = _handle_closed_block(closed, cwd)
+                if stack:
+                    stack[-1]['content_lines'].extend(processed)
                 else:
-                    current_block['end_line'] = line
-                    closed_block = stack.pop()
-                    processed_lines = _handle_closed_block(closed_block, cwd)
-                    if stack:
-                        stack[-1]['content_lines'].extend(processed_lines)
-                    else:
-                        output_lines.extend(processed_lines)
-                    i += 1
-                    continue
+                    output_lines.extend(processed)
+                i += 1
+                
+                # 注意：结束标记之后不会立即开始新块，因为同一行不能既是结束又是开始（规范上不存在）
+                # 但为了防止意外，我们继续处理下一行，而不把当前行当开始标记处理。
+                continue
             else:
-                current_block['content_lines'].append(line)
+                # 未结束，行内容加入当前块
+                current['content_lines'].append(line)
                 i += 1
                 continue
-
-        if start_marker_match:
-            indent = start_marker_match.group(1)
-            backticks = start_marker_match.group(2)
-            lang = start_marker_match.group(3).lower()
+        
+        # 不在栈内，处理开始标记
+        if start_match:
+            indent = start_match.group(1)
+            backticks = start_match.group(2)
+            lang = start_match.group(3).lower()
             stack.append({
                 'lang': lang,
                 'indent': indent,
@@ -206,13 +196,12 @@ def process_markdown(markdown_text: str, cwd: str = "") -> str:
             })
             i += 1
             continue
-
-        if not stack:
-            output_lines.append(line)
-        else:
-            stack[-1]['content_lines'].append(line)
+        
+        # 普通行，直接输出
+        output_lines.append(line)
         i += 1
 
+    # 处理未闭合的块（直接原样输出，不执行）
     while stack:
         unclosed = stack.pop()
         if stack:
@@ -285,9 +274,6 @@ def process_text(text: str, operation: str, cwd: str = "") -> str:
         if not ALLOW_UNSAFE:
             return "[安全限制]"
         try:
-            # 【修复点 3】: 不要用 subprocess.run(shell=True)
-            # 在 Windows 上 shell=True 会调用 CMD (cmd 不支持 ls)
-            # 这里统一复用上方的 execute_bash 执行器，真正执行 bash
             stdout, stderr = execute_bash(text, cwd)
             res = stdout.strip()
             if stderr:

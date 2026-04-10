@@ -1,12 +1,13 @@
-# routers/process.py
 import os
 import subprocess
 import re
 import tempfile
 import sys
+import signal
 from typing import Tuple, List, Dict, Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, field_validator
 
 # ============ 安全配置 ============
@@ -35,6 +36,49 @@ class TextResponse(BaseModel):
     operation: str
     original_length: int
     processed_length: int
+
+
+# ============ 安全的子进程执行器（防死锁） ============
+def _run_cmd_with_timeout(cmd: List[str], cwd: str, timeout: int, env: Dict[str, str]) -> Tuple[str, str]:
+    """安全的子进程执行函数，确保超时后清理整个进程树，防止管道死锁"""
+    kwargs = {}
+    if os.name == "nt":
+        # Windows: 创建新进程组，以便可以通过 CTRL_BREAK 终止整个进程树
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        # Unix/Linux: 创建新 Session，以便可以通过 killpg 终止整个进程组
+        kwargs["preexec_fn"] = os.setsid
+
+    p = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding='utf-8',
+        **kwargs
+    )
+
+    try:
+        # 正常等待执行结束
+        stdout, stderr = p.communicate(timeout=timeout)
+        return stdout, stderr
+    except subprocess.TimeoutExpired:
+        # 发生超时：强杀整个进程树（包括所有衍生出的子进程/孙子进程）
+        try:
+            if os.name == "nt":
+                p.send_signal(signal.CTRL_BREAK_EVENT)
+                p.kill() # 兜底逻辑
+            else:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except Exception:
+            pass
+        
+        # 必须再次调用 communicate 清空和关闭管道，防止产生僵尸进程或句柄泄露
+        p.communicate()
+        raise
+
 
 # ============ 执行器 ============
 def execute_bash(code: str, cwd: str = "", timeout: int = 60) -> Tuple[str, str]:
@@ -71,22 +115,17 @@ def execute_bash(code: str, cwd: str = "", timeout: int = 60) -> Tuple[str, str]
         
         env = os.environ.copy()
         
-        result = subprocess.run(
+        # 使用安全的防死锁执行函数替代 subprocess.run
+        stdout, stderr = _run_cmd_with_timeout(
             [bash_exe, temp_file_path], 
-            capture_output=True, 
-            text=True, 
-            timeout=timeout,
-            encoding='utf-8',
-            cwd=run_cwd,
+            cwd=run_cwd, 
+            timeout=timeout, 
             env=env
         )
-        
-        stdout = result.stdout.strip() if result.stdout else ""
-        stderr = result.stderr.strip() if result.stderr else ""
-        return stdout, stderr
+        return stdout.strip(), stderr.strip()
         
     except subprocess.TimeoutExpired:
-        return "", f"错误：命令执行超时（{timeout}秒）"
+        return "", f"错误：命令执行超时（{timeout}秒）并已强制终止。"
     except Exception as e:
         return "", f"执行错误: {str(e)}"
     finally:
@@ -113,18 +152,17 @@ def execute_python(code: str, cwd: str = "", timeout: int = 10) -> Tuple[str, st
             temp_file_path = f.name
         
         env = os.environ.copy()
-        result = subprocess.run(
+        
+        # 使用安全的防死锁执行函数替代 subprocess.run
+        stdout, stderr = _run_cmd_with_timeout(
             [sys.executable, temp_file_path], 
-            capture_output=True, 
-            text=True, 
-            timeout=timeout,
-            encoding='utf-8',
-            cwd=run_cwd,
+            cwd=run_cwd, 
+            timeout=timeout, 
             env=env
         )
         
-        stdout = result.stdout.strip() if result.stdout else ""
-        stderr = result.stderr.strip() if result.stderr else ""
+        stdout = stdout.strip()
+        stderr = stderr.strip()
         
         if stderr and temp_file_path:
             stderr = stderr.replace(temp_file_path, "<string>")
@@ -132,7 +170,7 @@ def execute_python(code: str, cwd: str = "", timeout: int = 10) -> Tuple[str, st
         return stdout, stderr
         
     except subprocess.TimeoutExpired:
-        return "", f"错误：Python 执行超时（{timeout}秒）"
+        return "", f"错误：Python 执行超时（{timeout}秒）并已强制终止。"
     except Exception as e:
         return "", f"执行错误: {str(e)}"
     finally:
@@ -142,19 +180,16 @@ def execute_python(code: str, cwd: str = "", timeout: int = 10) -> Tuple[str, st
             except Exception:
                 pass
 
-# ============ 栈解析逻辑（修复死循环问题） ============
+# ============ 栈解析逻辑（保持不变） ============
 
 def strip_output_blocks(markdown_text: str) -> str:
-    """移除 Markdown 中所有 ```stdout 和 ```stderr 代码块及其内容"""
     lines = markdown_text.splitlines(keepends=True)
     result = []
     in_output_block = False
     for line in lines:
-        # 检测输出块开始标记（支持任意缩进和大小写）
         if re.match(r'^\s*```(stdout|stderr)\s*$', line, re.IGNORECASE):
             in_output_block = True
             continue
-        # 当处于输出块内时，遇到单独的 ``` 即结束
         if in_output_block and re.match(r'^\s*```\s*$', line):
             in_output_block = False
             continue
@@ -163,7 +198,6 @@ def strip_output_blocks(markdown_text: str) -> str:
     return ''.join(result)
 
 def process_markdown(markdown_text: str, cwd: str = "", timeout: int = 60) -> str:
-    # 第一步：清理历史输出块
     markdown_text = strip_output_blocks(markdown_text)
     lines = markdown_text.splitlines(keepends=False)
     output_lines = []
@@ -173,18 +207,14 @@ def process_markdown(markdown_text: str, cwd: str = "", timeout: int = 60) -> st
     n = len(lines)
     while i < n:
         line = lines[i]
-        # 检查是否是开始标记
         start_match = re.match(r'^(\s*)(`{3,})(\w*)\s*$', line)
         
         if stack:
-            # 当前在代码块内部，检查是否遇到结束标记
             current = stack[-1]
             min_ticks = current['backtick_count']
-            # 结束标记：相同或更多的反引号，且之后没有语言标识
             end_match = re.match(rf'^(\s*)(`{{{min_ticks},}})\s*$', line)
             
             if end_match:
-                # 结束当前块
                 current['end_line'] = line
                 closed = stack.pop()
                 processed = _handle_closed_block(closed, cwd, timeout)
@@ -193,17 +223,12 @@ def process_markdown(markdown_text: str, cwd: str = "", timeout: int = 60) -> st
                 else:
                     output_lines.extend(processed)
                 i += 1
-                
-                # 注意：结束标记之后不会立即开始新块，因为同一行不能既是结束又是开始（规范上不存在）
-                # 但为了防止意外，我们继续处理下一行，而不把当前行当开始标记处理。
                 continue
             else:
-                # 未结束，行内容加入当前块
                 current['content_lines'].append(line)
                 i += 1
                 continue
         
-        # 不在栈内，处理开始标记
         if start_match:
             indent = start_match.group(1)
             backticks = start_match.group(2)
@@ -219,11 +244,9 @@ def process_markdown(markdown_text: str, cwd: str = "", timeout: int = 60) -> st
             i += 1
             continue
         
-        # 普通行，直接输出
         output_lines.append(line)
         i += 1
 
-    # 处理未闭合的块（直接原样输出，不执行）
     while stack:
         unclosed = stack.pop()
         if stack:
@@ -290,7 +313,15 @@ def process_text(text: str, operation: str, cwd: str = "", timeout: int = 60) ->
 @router.post("/process", response_model=TextResponse)
 async def process_endpoint(request: TextRequest):
     try:
-        result = process_text(request.text, request.operation, request.cwd, request.timeout)
+        # [关键修复]：必须使用 run_in_threadpool 将同步阻塞代码放到后台线程中运行，
+        # 防止进程执行（哪怕是成功执行时的挂起）卡死 FastAPI 的主事件循环单线程。
+        result = await run_in_threadpool(
+            process_text, 
+            request.text, 
+            request.operation, 
+            request.cwd, 
+            request.timeout
+        )
         return TextResponse(
             result=result,
             operation=request.operation,

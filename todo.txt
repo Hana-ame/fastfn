@@ -1,0 +1,16 @@
+fastfn 项目待办事项 (生成时间: 2026-04-10 12:07:22)
+
+[ ] 完善主程序 main.py 的错误处理与日志记录
+[ ] 为 middleware.py 添加单元测试 (tests/test_middleware.py)
+[ ] 实现 process_manager.py 中的进程监控与自动重启功能
+[ ] 补充 consts.py 中的配置常量注释
+[ ] 修复 gemini_3.1_flash.sh 脚本在 Windows 下的兼容性问题
+[ ] 添加配置文件支持 (config.yaml 或 .env)
+[ ] 编写使用文档 (USAGE.txt) 替代纯文本 README
+[ ] 优化 LLM 调用的异步性能 (asyncio.gather)
+[ ] 增加对 cookies.txt 的加密存储处理
+[ ] 清理未使用的依赖和冗余代码
+[ ] 集成 CI/CD (GitHub Actions) 进行自动化测试
+[ ] 发布 v0.1.0 版本标签
+
+注：完成某项后请在行首将 [ ] 改为 [x]

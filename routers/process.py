@@ -4,6 +4,7 @@ import subprocess
 import re
 import tempfile
 import sys
+import urllib.request
 from typing import Tuple, List, Dict, Any
 
 from fastapi import APIRouter, HTTPException
@@ -21,11 +22,12 @@ class TextRequest(BaseModel):
     operation: str = "execute_markdown"
     cwd: str = ""  # 执行路径 (Current Working Directory)
     timeout: int = 60  # 执行超时时间（秒）
+    key: str = "" # 用于鉴权的密钥
 
     @field_validator('operation')
     @classmethod
     def validate_operation(cls, v):
-        allowed = {"execute_markdown"}
+        allowed = {"execute_markdown", "execute_python", "execute_bash"}
         if v not in allowed:
             raise ValueError(f"不支持的操作: {v}")
         return v
@@ -278,17 +280,71 @@ def _handle_closed_block(block: Dict[str, Any], cwd: str, timeout: int) -> List[
 
     return result_lines
 
+def try_decompress(text: str) -> str:
+    import base64
+    import gzip
+    try:
+        # Check if text is base64 encoded gzip
+        if len(text) > 10 and re.match(r'^[A-Za-z0-9+/=\s]+$', text):
+            data = base64.b64decode(text.strip())
+            if data.startswith(b'\x1f\x8b'):
+                return gzip.decompress(data).decode('utf-8')
+    except Exception:
+        pass
+    return text
+
+def fetch_from_url(url: str) -> str:
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            data = response.read()
+            if data.startswith(b'\x1f\x8b'):
+                import gzip
+                data = gzip.decompress(data)
+            return data.decode('utf-8')
+    except Exception as e:
+        raise ValueError(f"无法从URL获取内容: {e}")
+
 # ============ 文本处理主函数 ============
 def process_text(text: str, operation: str, cwd: str = "", timeout: int = 60) -> str:
+    if text.strip().startswith("http://") or text.strip().startswith("https://"):
+        text = fetch_from_url(text.strip())
+    else:
+        text = try_decompress(text)
+
     if operation == "execute_markdown":
         return process_markdown(text, cwd, timeout)
+    elif operation == "execute_python":
+        stdout, stderr = execute_python(text, cwd, timeout)
+        result = []
+        if stdout:
+            result.append(f"```stdout\n{stdout}\n```")
+        if stderr:
+            result.append(f"```stderr\n{stderr}\n```")
+        if not stdout and not stderr:
+            result.append("```output\n(无输出)\n```")
+        return '\n'.join(result)
+    elif operation == "execute_bash":
+        stdout, stderr = execute_bash(text, cwd, timeout)
+        result = []
+        if stdout:
+            result.append(f"```stdout\n{stdout}\n```")
+        if stderr:
+            result.append(f"```stderr\n{stderr}\n```")
+        if not stdout and not stderr:
+            result.append("```output\n(无输出)\n```")
+        return '\n'.join(result)
     else:
-        raise ValueError(f"不支持的操作: {operation}，仅允许 execute_markdown")
+        raise ValueError(f"不支持的操作: {operation}，仅允许 execute_markdown, execute_python, execute_bash")
 
 
 # ============ 路由端点 ============
 @router.post("/process", response_model=TextResponse)
 async def process_endpoint(request: TextRequest):
+    expected_key = os.getenv("FASTFN_KEY", "")
+    if expected_key and request.key != expected_key:
+        raise HTTPException(status_code=401, detail="无效的密钥 (Invalid key)")
+
     try:
         result = process_text(request.text, request.operation, request.cwd, request.timeout)
         return TextResponse(

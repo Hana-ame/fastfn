@@ -5,7 +5,7 @@ import tempfile
 import sys
 import signal
 import urllib.request
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -19,18 +19,17 @@ router = APIRouter()
 
 # ============ 数据模型 ============
 class TextRequest(BaseModel):
-    text: str
+    # 兼容老版本
+    text: Optional[str] = None
     operation: str = "execute_markdown"
+    
+    # 新版键名区分
+    bash: Optional[str] = None
+    python: Optional[str] = None
+    markdown: Optional[str] = None
+    
     cwd: str = ""  # 执行路径 (Current Working Directory)
     timeout: int = 60  # 执行超时时间（秒）
-
-    @field_validator('operation')
-    @classmethod
-    def validate_operation(cls, v):
-        allowed = {"execute_markdown", "execute_python", "execute_bash"}
-        if v not in allowed:
-            raise ValueError(f"不支持的操作: {v}")
-        return v
 
 class TextResponse(BaseModel):
     result: str
@@ -364,19 +363,35 @@ def process_text(text: str, operation: str, cwd: str = "", timeout: int = 60) ->
 @router.post("/process", response_model=TextResponse)
 async def process_endpoint(request: TextRequest):
     try:
+        # 确定需要执行的文本和操作
+        if request.bash is not None:
+            text = request.bash
+            operation = "execute_bash"
+        elif request.python is not None:
+            text = request.python
+            operation = "execute_python"
+        elif request.markdown is not None:
+            text = request.markdown
+            operation = "execute_markdown"
+        elif request.text is not None:
+            text = request.text
+            operation = request.operation
+        else:
+            raise ValueError("未提供有效的执行代码(缺少 bash, python, markdown 或 text 字段)")
+
         # [关键修复]：必须使用 run_in_threadpool 将同步阻塞代码放到后台线程中运行，
         # 防止进程执行（哪怕是成功执行时的挂起）卡死 FastAPI 的主事件循环单线程。
         result = await run_in_threadpool(
             process_text, 
-            request.text, 
-            request.operation, 
+            text, 
+            operation, 
             request.cwd, 
             request.timeout
         )
         return TextResponse(
             result=result,
-            operation=request.operation,
-            original_length=len(request.text),
+            operation=operation,
+            original_length=len(text),
             processed_length=len(result)
         )
     except Exception as e:

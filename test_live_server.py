@@ -43,8 +43,7 @@ def start_server():
 
 def test_execute_python():
     payload = {
-        "text": "print('Hello from Python!')",
-        "operation": "execute_python"
+        "python": "print('Hello from Python!')"
     }
     response = requests.post(f"{SERVER_URL}/process", json=payload)
     assert response.status_code == 200
@@ -54,8 +53,7 @@ def test_execute_python():
 
 def test_execute_bash():
     payload = {
-        "text": "echo 'Hello from Bash!'",
-        "operation": "execute_bash"
+        "bash": "echo 'Hello from Bash!'"
     }
     response = requests.post(f"{SERVER_URL}/process", json=payload)
     assert response.status_code == 200
@@ -65,8 +63,7 @@ def test_execute_bash():
 
 def test_execute_markdown():
     payload = {
-        "text": "```python\nprint('MD Python')\n```",
-        "operation": "execute_markdown"
+        "markdown": "```python\nprint('MD Python')\n```"
     }
     response = requests.post(f"{SERVER_URL}/process", json=payload)
     assert response.status_code == 200
@@ -80,4 +77,13 @@ def test_invalid_operation():
         "operation": "execute_ruby"
     }
     response = requests.post(f"{SERVER_URL}/process", json=payload)
-    assert response.status_code == 422 # Pydantic validation error
+    assert response.status_code == 500 # Custom error raised
+    assert "不支持的操作" in response.json()["detail"]
+
+def test_missing_valid_field():
+    payload = {
+        "timeout": 10
+    }
+    response = requests.post(f"{SERVER_URL}/process", json=payload)
+    assert response.status_code == 500 # Custom error raised
+    assert "未提供有效的执行代码" in response.json()["detail"]

@@ -10,8 +10,6 @@ SERVER_URL = "http://127.0.0.1:8000"
 
 @pytest.fixture(scope="session", autouse=True)
 def start_server():
-    # Set the key for testing
-    os.environ["FASTFN_KEY"] = "testkey123"
     os.environ["ALLOW_CODE_EXECUTION"] = "true"
 
     # Start the server using uvicorn in a subprocess
@@ -46,8 +44,7 @@ def start_server():
 def test_execute_python():
     payload = {
         "text": "print('Hello from Python!')",
-        "operation": "execute_python",
-        "key": "testkey123"
+        "operation": "execute_python"
     }
     response = requests.post(f"{SERVER_URL}/process", json=payload)
     assert response.status_code == 200
@@ -58,8 +55,7 @@ def test_execute_python():
 def test_execute_bash():
     payload = {
         "text": "echo 'Hello from Bash!'",
-        "operation": "execute_bash",
-        "key": "testkey123"
+        "operation": "execute_bash"
     }
     response = requests.post(f"{SERVER_URL}/process", json=payload)
     assert response.status_code == 200
@@ -70,8 +66,7 @@ def test_execute_bash():
 def test_execute_markdown():
     payload = {
         "text": "```python\nprint('MD Python')\n```",
-        "operation": "execute_markdown",
-        "key": "testkey123"
+        "operation": "execute_markdown"
     }
     response = requests.post(f"{SERVER_URL}/process", json=payload)
     assert response.status_code == 200
@@ -79,20 +74,10 @@ def test_execute_markdown():
     assert "MD Python" in data["result"]
     assert "```stdout" in data["result"]
 
-def test_invalid_key():
-    payload = {
-        "text": "print('Hello')",
-        "operation": "execute_python",
-        "key": "wrongkey"
-    }
-    response = requests.post(f"{SERVER_URL}/process", json=payload)
-    assert response.status_code == 401
-
 def test_invalid_operation():
     payload = {
         "text": "print('Hello')",
-        "operation": "execute_ruby",
-        "key": "testkey123"
+        "operation": "execute_ruby"
     }
     response = requests.post(f"{SERVER_URL}/process", json=payload)
     assert response.status_code == 422 # Pydantic validation error

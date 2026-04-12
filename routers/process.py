@@ -22,7 +22,6 @@ class TextRequest(BaseModel):
     operation: str = "execute_markdown"
     cwd: str = ""  # 执行路径 (Current Working Directory)
     timeout: int = 60  # 执行超时时间（秒）
-    key: str = "" # 用于鉴权的密钥
 
     @field_validator('operation')
     @classmethod
@@ -341,10 +340,6 @@ def process_text(text: str, operation: str, cwd: str = "", timeout: int = 60) ->
 # ============ 路由端点 ============
 @router.post("/process", response_model=TextResponse)
 async def process_endpoint(request: TextRequest):
-    expected_key = os.getenv("FASTFN_KEY", "")
-    if expected_key and request.key != expected_key:
-        raise HTTPException(status_code=401, detail="无效的密钥 (Invalid key)")
-
     try:
         result = process_text(request.text, request.operation, request.cwd, request.timeout)
         return TextResponse(

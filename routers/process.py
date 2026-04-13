@@ -5,11 +5,16 @@ import tempfile
 import sys
 import signal
 import urllib.request
+import json
+from pathlib import Path
 from typing import Tuple, List, Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, field_validator
+
+from consts import BASE_DIR
+from process_manager import get_or_create_process, call_runner
 
 # ============ 安全配置 ============
 ALLOW_UNSAFE = os.getenv("ALLOW_CODE_EXECUTION", "false").lower() == "true"
@@ -18,6 +23,10 @@ ALLOW_UNSAFE = True
 router = APIRouter()
 
 # ============ 数据模型 ============
+class FunctionCall(BaseModel):
+    name: str
+    arguments: str # JSON 字符串，符合 OpenAI 标准
+
 class TextRequest(BaseModel):
     # 兼容老版本
     text: Optional[str] = None
@@ -27,6 +36,9 @@ class TextRequest(BaseModel):
     bash: Optional[str] = None
     python: Optional[str] = None
     markdown: Optional[str] = None
+    
+    # 函数调用模式
+    fncall: Optional[FunctionCall] = None
     
     cwd: str = ""  # 执行路径 (Current Working Directory)
     timeout: int = 60  # 执行超时时间（秒）
@@ -358,12 +370,67 @@ def process_text(text: str, operation: str, cwd: str = "", timeout: int = 60) ->
     else:
         raise ValueError(f"不支持的操作: {operation}，仅允许 execute_markdown, execute_python, execute_bash")
 
+async def handle_fncall(fncall: FunctionCall, cwd: str, timeout: int) -> str:
+    name = fncall.name
+    try:
+        args = json.loads(fncall.arguments)
+    except Exception:
+        args = {"text": fncall.arguments} # Fallback if not valid JSON
+
+    if name == "execute_bash":
+        code = args.get("code") or args.get("command") or args.get("text") or ""
+        stdout, stderr = await run_in_threadpool(execute_bash, code, cwd, timeout)
+        res = []
+        if stdout: res.append(f"```stdout\n{stdout}\n```")
+        if stderr: res.append(f"```stderr\n{stderr}\n```")
+        return "\n".join(res) if res else "```output\n(无输出)\n```"
+    elif name == "execute_python":
+        code = args.get("code") or args.get("python") or args.get("text") or ""
+        stdout, stderr = await run_in_threadpool(execute_python, code, cwd, timeout)
+        res = []
+        if stdout: res.append(f"```stdout\n{stdout}\n```")
+        if stderr: res.append(f"```stderr\n{stderr}\n```")
+        return "\n".join(res) if res else "```output\n(无输出)\n```"
+    elif name == "execute_markdown":
+        text = args.get("text") or args.get("markdown") or ""
+        return await run_in_threadpool(process_markdown, text, cwd, timeout)
+    else:
+        # 尝试调用 external functions (folder.filename)
+        # 支持多种分隔符
+        name_clean = name.replace(":", "/").replace(".", "/")
+        if "/" in name_clean:
+            folder, filename = name_clean.rsplit("/", 1)
+            if not filename.endswith(".py"):
+                filename += ".py"
+            file_path = BASE_DIR / folder / filename
+            if not file_path.exists():
+                raise ValueError(f"函数 {name} 未找到 (路径: {file_path})")
+
+            key = f"{folder}/{filename}"
+            proc = await get_or_create_process(key, file_path)
+            response = await call_runner(proc, args, timeout=timeout)
+            if response.get("error"):
+                return f"Error: {response['error']}"
+            return json.dumps(response.get("result"), indent=2, ensure_ascii=False)
+        else:
+            raise ValueError(f"未知函数: {name}")
+
 
 # ============ 路由端点 ============
 @router.post("/process", response_model=TextResponse)
 async def process_endpoint(request: TextRequest):
     try:
-        # 确定需要执行的文本和操作
+        # 1. 优先处理 fncall (OpenAI 风格函数调用)
+        if request.fncall is not None:
+            result = await handle_fncall(request.fncall, request.cwd, request.timeout)
+            return TextResponse(
+                result=result,
+                operation=f"fncall:{request.fncall.name}",
+                original_length=len(request.fncall.arguments),
+                processed_length=len(result)
+            )
+
+        # 2. 兼容性处理：确定需要执行的文本和操作
         if request.bash is not None:
             text = request.bash
             operation = "execute_bash"
@@ -377,10 +444,9 @@ async def process_endpoint(request: TextRequest):
             text = request.text
             operation = request.operation
         else:
-            raise ValueError("未提供有效的执行代码(缺少 bash, python, markdown 或 text 字段)")
+            raise ValueError("未提供有效的执行代码 (缺少 bash, python, markdown, text 或 fncall 字段)")
 
-        # [关键修复]：必须使用 run_in_threadpool 将同步阻塞代码放到后台线程中运行，
-        # 防止进程执行（哪怕是成功执行时的挂起）卡死 FastAPI 的主事件循环单线程。
+        # 使用 run_in_threadpool 防止阻塞
         result = await run_in_threadpool(
             process_text, 
             text, 

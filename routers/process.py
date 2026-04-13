@@ -37,7 +37,18 @@ class TextRequest(BaseModel):
     python: Optional[str] = None
     markdown: Optional[str] = None
     
-    # 函数调用模式
+    # --- OpenAI 兼容字段 ---
+    # 1. 兼容 OpenAI function 字段 (message.function_call)
+    function: Optional[FunctionCall] = None
+    # 2. 兼容 OpenAI tool_call 格式 (单一对象)
+    tool_call: Optional[Dict[str, Any]] = None
+    # 3. 兼容 OpenAI tool_calls 列表格式
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    # 4. 兼容直接作为顶级字段的 FunctionCall (name + arguments)
+    name: Optional[str] = None
+    arguments: Optional[str] = None
+    
+    # 原有的自定义键名
     fncall: Optional[FunctionCall] = None
     
     cwd: str = ""  # 执行路径 (Current Working Directory)
@@ -420,13 +431,31 @@ async def handle_fncall(fncall: FunctionCall, cwd: str, timeout: int) -> str:
 @router.post("/process", response_model=TextResponse)
 async def process_endpoint(request: TextRequest):
     try:
-        # 1. 优先处理 fncall (OpenAI 风格函数调用)
-        if request.fncall is not None:
-            result = await handle_fncall(request.fncall, request.cwd, request.timeout)
+        # 1. 优先处理各种 OpenAI 风格的函数调用
+        target_fn = request.fncall or request.function
+        
+        # 处理顶级字段 (name + arguments)
+        if target_fn is None and request.name and request.arguments:
+            target_fn = FunctionCall(name=request.name, arguments=request.arguments)
+            
+        # 处理单一 tool_call 对象
+        if target_fn is None and request.tool_call:
+            f_data = request.tool_call.get("function")
+            if f_data and "name" in f_data and "arguments" in f_data:
+                target_fn = FunctionCall(**f_data)
+                
+        # 处理 tool_calls 列表 (取第一个)
+        if target_fn is None and request.tool_calls and len(request.tool_calls) > 0:
+            f_data = request.tool_calls[0].get("function")
+            if f_data and "name" in f_data and "arguments" in f_data:
+                target_fn = FunctionCall(**f_data)
+
+        if target_fn is not None:
+            result = await handle_fncall(target_fn, request.cwd, request.timeout)
             return TextResponse(
                 result=result,
-                operation=f"fncall:{request.fncall.name}",
-                original_length=len(request.fncall.arguments),
+                operation=f"fncall:{target_fn.name}",
+                original_length=len(target_fn.arguments),
                 processed_length=len(result)
             )
 
@@ -444,7 +473,7 @@ async def process_endpoint(request: TextRequest):
             text = request.text
             operation = request.operation
         else:
-            raise ValueError("未提供有效的执行代码 (缺少 bash, python, markdown, text 或 fncall 字段)")
+            raise ValueError("未提供有效的执行代码 (缺少 bash, python, markdown, text 或 OpenAI 风格字段)")
 
         # 使用 run_in_threadpool 防止阻塞
         result = await run_in_threadpool(

@@ -53,7 +53,7 @@ jobs:
         path: dist/fastfn-windows.exe
 
   build-termux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
@@ -65,7 +65,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install pyinstaller
         pip install -r requirements.txt
-    - name: Build with PyInstaller (Linux binary for Termux)
+    - name: Build with PyInstaller
       run: |
         pyinstaller --onefile --name fastfn-termux main.py
     - name: Upload artifact

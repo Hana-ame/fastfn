@@ -1,0 +1,75 @@
+name: Build Binaries
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install -r requirements.txt
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --onefile --name fastfn-linux main.py
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: fastfn-linux
+        path: dist/fastfn-linux
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install -r requirements.txt
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --onefile --name fastfn-windows.exe main.py
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: fastfn-windows
+        path: dist/fastfn-windows.exe
+
+  build-termux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install -r requirements.txt
+    - name: Build with PyInstaller (Linux binary for Termux)
+      run: |
+        pyinstaller --onefile --name fastfn-termux main.py
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: fastfn-termux
+        path: dist/fastfn-termux
